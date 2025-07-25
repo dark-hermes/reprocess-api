@@ -352,3 +352,91 @@ routerAdd(
   },
   $apis.requireAuth()
 );
+
+/**
+ * Fungsi ini akan dipanggil setiap kali ada record 'actions'
+ * yang dibuat atau diperbarui.
+ */
+async function checkAndAwardBadges(dao, e) {
+  const actionRecord = e.record;
+
+  // 1. Hanya proses jika aksi baru saja ditandai selesai (finished: true)
+  const isNewlyFinished = actionRecord.get("finished") && !e.originalRecord?.get("finished");
+  if (!isNewlyFinished) {
+    return; // Keluar jika tidak ada perubahan status ke "finished"
+  }
+
+  // 2. Dapatkan data user dan kategori waste dari relasi
+  let wasteRecord;
+  try {
+    // Ambil data 'waste' yang berelasi dengan 'action' ini
+    wasteRecord = await dao.findRecordById("wastes", actionRecord.get("waste"));
+  } catch (err) {
+    console.error("Error finding waste record:", err);
+    return; // Keluar jika waste tidak ditemukan
+  }
+  
+  const userId = wasteRecord.get("user");
+  const wasteCategory = wasteRecord.get("category"); // "organic" atau "inorganic"
+  
+  if (!userId) return; // Keluar jika tidak ada user yang terkait
+
+  // 3. Hitung total aksi yang sudah selesai untuk kategori ini oleh user tersebut
+  const filter = `waste.user.id = "${userId}" && waste.category = "${wasteCategory}" && finished = true`;
+  const finishedActions = await dao.findRecordsByFilter("actions", filter);
+  const count = finishedActions.length;
+
+  // 4. Tentukan nama badge berdasarkan jumlah dan kategori
+  let badgeNameToAward = null;
+  if (wasteCategory === "organic") {
+    if (count >= 50) badgeNameToAward = "Earth Steward Master";
+    else if (count >= 10) badgeNameToAward = "Earth Steward Adept";
+    else if (count >= 1) badgeNameToAward = "Earth Steward Novice";
+  } else if (wasteCategory === "inorganic") {
+    if (count >= 50) badgeNameToAward = "Future Forger Master";
+    else if (count >= 10) badgeNameToAward = "Future Forger Adept";
+    else if (count >= 1) badgeNameToAward = "Future Forger Novice";
+  }
+
+  if (!badgeNameToAward) return; // Tidak ada badge baru untuk diberikan
+
+  // 5. Berikan badge jika user belum memilikinya
+  try {
+    const badgeRecord = await dao.findFirstRecordByData("badges", "name", badgeNameToAward);
+    const badgeId = badgeRecord.id;
+
+    // Cek apakah user sudah punya badge ini
+    const existingUserBadge = await dao.findFirstRecordByFilter(
+      "user_badges",
+      `user.id = "${userId}" && badge.id = "${badgeId}"`
+    );
+
+    if (existingUserBadge) {
+      console.log(`User ${userId} already has badge ${badgeNameToAward}.`);
+      return; // User sudah punya, tidak perlu diberi lagi
+    }
+
+    // Jika belum punya, buat record baru di 'user_badges'
+    const userBadgesCollection = await dao.findCollectionByNameOrId("user_badges");
+    const newBadgeRecord = new Record(userBadgesCollection, {
+      user: userId,
+      badge: badgeId,
+    });
+    
+    await dao.saveRecord(newBadgeRecord);
+    console.log(`Awarded badge "${badgeNameToAward}" to user ${userId}.`);
+
+  } catch (err) {
+    console.error("Error awarding badge:", err);
+  }
+}
+
+// Jalankan fungsi di atas setelah record 'actions' DIBUAT
+onRecordAfterCreate("actions", (e) => {
+  checkAndAwardBadges($app.Dao(), e);
+});
+
+// Jalankan fungsi di atas setelah record 'actions' DIPERBARUI
+onRecordAfterUpdate("actions", (e) => {
+  checkAndAwardBadges($app.Dao(), e);
+});
